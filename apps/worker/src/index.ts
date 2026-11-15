@@ -39,6 +39,7 @@ import {
   InMemoryJobQueue,
   installedMessaging,
   isMessagingSurfaceEnabled,
+  machineCleanupRecords,
   messagingEnvFromProcess,
   messagingPlatformsFromEnv,
   PiAgentRuntime,
@@ -61,7 +62,7 @@ import {
   withRunWorker,
   withSecretPersistence,
 } from "@rakazo/adapters";
-import { resolveSupervisorToken } from "@rakazo/core";
+import { abortableDelay, resolveSupervisorToken } from "@rakazo/core";
 import {
   createBoardEvents,
   createDb,
@@ -78,7 +79,7 @@ import {
   runAsSystem,
   verifyContentKeys,
 } from "@rakazo/db";
-import { SERVICE_NAMES } from "@rakazo/logging";
+import { bestEffort, SERVICE_NAMES } from "@rakazo/logging";
 import { createRootLogger } from "@rakazo/logging/axiom";
 import { watchEventLoopStalls } from "@rakazo/logging/event-loop";
 import { MarkdownMemoryStore } from "@rakazo/memory";
@@ -140,14 +141,6 @@ async function main() {
       : new PiAgentRuntime({ sessionRoot: resolvePiSessionRoot(env.dataDir) });
   const sandboxProvider = resolveSandboxProvider(process.env);
   const sandboxOptions = sandboxProviderOptionsFromEnv(process.env);
-  const sandbox = await createRunSandbox(sandboxProvider, {
-    ...sandboxOptions,
-    supervisorUrl: process.env.SANDBOX_SUPERVISOR_URL ?? "http://127.0.0.1:7091",
-    supervisorToken: sandboxProvider === "docker" ? resolveSupervisorToken(process.env) : undefined,
-    dataDir: env.dataDir,
-    prisma,
-    secrets,
-  });
   const connectors = createConnectorRuntime(env, { prisma, secrets, events });
   // Never poll inbound here: Telegram allows a single getUpdates consumer,
   // and that is the API process, which owns the inbound sink.
@@ -169,6 +162,15 @@ async function main() {
   const runs = new RunStarter(realtime, { signal: shutdown.signal });
   const jobs: JobPublisher =
     inMemoryJobs ?? new RunJobPublisher(prisma, new GraphileJobPublisher(pool, prisma), runs);
+  const sandbox = await createRunSandbox(sandboxProvider, {
+    ...sandboxOptions,
+    supervisorUrl: process.env.SANDBOX_SUPERVISOR_URL ?? "http://127.0.0.1:7091",
+    supervisorToken: sandboxProvider === "docker" ? resolveSupervisorToken(process.env) : undefined,
+    dataDir: env.dataDir,
+    prisma,
+    secrets,
+    unreferencedMachines: machineCleanupRecords(jobs),
+  });
   const { messaging, installations: messagingInstallations } = installedMessaging(
     prisma,
     secrets,
@@ -300,8 +302,11 @@ async function main() {
         await realtime.close();
         await connectors.mcp.close();
         await connectors.installed.close();
-        await prisma.$disconnect().catch(() => undefined);
-        await pool.end().catch(() => undefined);
+        await bestEffort("disconnect database client", prisma.$disconnect());
+        // Once the job hosts have stopped, only work they gave up on can still hold a
+        // connection, such as Graphile's listener whose UNLISTEN never answered, so the
+        // wait is bounded; the process exits right after.
+        await Promise.race([bestEffort("close database pool", pool.end()), abortableDelay(10_000)]);
       } finally {
         await analytics?.flush();
         await shutdownPiTelemetry();

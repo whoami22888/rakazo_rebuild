@@ -1,5 +1,5 @@
 import type { AgentRunRequest, ComputerRef, SemanticMemoryProvider } from "@rakazo/adapter-kit";
-import { DEFAULT_CONTEXT_STRATEGY, runContinueJob } from "@rakazo/adapter-kit";
+import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import type { MessageBlock, RunStatus } from "@rakazo/contracts";
 import { disabledBuiltinToolSet, hasLab, resolveLabs } from "@rakazo/contracts";
 import {
@@ -44,9 +44,9 @@ import {
   teamChatRunFromOwner,
 } from "@rakazo/db";
 import { enrichLogContext, getLogger } from "@rakazo/logging";
-import { formatAgentEnvironmentInstruction } from "./agent-environment.js";
+import { formatAgentEnvironmentInstruction } from "./agent-environment.prompt.js";
 import { createApprovedEffectReplayQueue } from "./approval-effect.js";
-import { PARTIAL_REPLY_NOTE } from "./automated-messages.js";
+import { PARTIAL_REPLY_NOTE } from "./automated-messages.prompt.js";
 import { backgroundHelpersAllowed } from "./background-helpers.js";
 import { loadBotMessageContext } from "./bot-messages.js";
 import {
@@ -56,8 +56,8 @@ import {
   loadRunLoginRedactions,
 } from "./bot-secrets.js";
 import { createBrowserProvider } from "./browser-provider-factory.js";
+import { agentConnectionTools, builtinAgentTools } from "./builtin.tool-definition.js";
 import { partitionTools } from "./builtin-tool-bridge.js";
-import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
 import { USER_CLOUD_AGENT_KEY_PREFIX } from "./cloud-agent-factory.js";
 import { cloudAgentForActor } from "./cloud-agent-service.js";
 import { mergeConnectedPlugins, needsLivePluginSync } from "./composio-connector.js";
@@ -80,7 +80,7 @@ import {
   PINNED_COMPUTER_MODEL_LOST_RUN_ERROR,
   resolveComputerRunModel,
 } from "./computer-model-settings.js";
-import { teamWorkspaceInstruction } from "./computer-support.js";
+import { teamWorkspaceInstruction } from "./computer-support.prompt.js";
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import {
   connectedContext,
@@ -88,19 +88,21 @@ import {
   persistLivePluginConnections,
   selectRunConnections,
 } from "./connection-context.js";
-import { formatCurrentTimeInstruction } from "./current-time.js";
+import { formatCurrentTimeInstruction } from "./current-time.prompt.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import type { ExecutorDeps } from "./executor-deps.js";
 import type { FleetRun } from "./fleet-tools.js";
 import { loadBotGroupDirectory, loadGroupContext } from "./group-handoff.js";
 import {
-  formatCompactedSummary,
-  formatRecalledMemory,
   historyWindowSize,
   LEGACY_HISTORY_WINDOW_SIZE,
-  MAX_RECALLED_MEMORIES,
   selectCompactedHistory,
 } from "./history-compaction.js";
+import {
+  formatCompactedSummary,
+  formatRecalledMemory,
+  MAX_RECALLED_MEMORIES,
+} from "./history-compaction.prompt.js";
 import {
   historySpeaker,
   loadSpacePeople,
@@ -118,7 +120,6 @@ import {
   runModelChoice,
 } from "./model-selection.js";
 import { modelAcceptsImageInput } from "./model-vision.js";
-import { usesNativeShell } from "./native-shell.js";
 import { createPaidServiceProvider } from "./paid-services-factory.js";
 import { paymentWalletConnected } from "./payment-wallets.js";
 import { restoreComputerModels } from "./pi-runtime-computer-mode.js";
@@ -130,7 +131,8 @@ import {
   messageToAgentHistoryText,
 } from "./reply-context.js";
 import { backOffRoutineAfterAccountError } from "./routine-backoff.js";
-import { lateRoutineRunDueAt, lateRoutineRunInstruction } from "./routine-lateness.js";
+import { lateRoutineRunDueAt } from "./routine-lateness.js";
+import { lateRoutineRunInstruction } from "./routine-lateness.prompt.js";
 import { lazyRunComputer } from "./run-computer.js";
 import type {
   RunComputerUseState,
@@ -153,7 +155,7 @@ import {
   threadContextForRun,
   userTurnInstructions,
   voiceCallInstruction,
-} from "./run-instructions.js";
+} from "./run-instructions.prompt.js";
 import {
   claimRun,
   createRunWorkspaceCheckpoint,
@@ -181,7 +183,7 @@ import {
   runAllowsSilentEmpty,
   runReplyGuidance,
   runReplyMode,
-} from "./run-replies.js";
+} from "./run-replies.prompt.js";
 import {
   notifyRoutineRetryAttemptsExhausted,
   retryRoutineRun,
@@ -209,11 +211,12 @@ import {
 import {
   claimRunSteering,
   loadCurrentTurnImages,
-  missingTurnImagesInstruction,
   RECENT_TURN_IMAGE_TURNS,
   withLatestStepScreenshot,
   withRecentTurnImages,
 } from "./run-turn-images.js";
+import { missingTurnImagesInstruction } from "./run-turn-images.prompt.js";
+import { sandboxKindCapabilities } from "./sandbox-kind-capabilities.js";
 import { loadAgentScratchpadContext } from "./scratchpad-context.js";
 import { inferScript } from "./scripted-runtime.js";
 import { loadSharedSpaceNote } from "./shared-space-note.js";
@@ -227,18 +230,20 @@ import {
   takeoverCheckpointOf,
   takeoverContinuePlan,
 } from "./takeover-resume.js";
-import { TASK_CATALOG_GUIDANCE } from "./task-catalog.js";
+import { TASK_CATALOG_GUIDANCE } from "./task-catalog.prompt.js";
 import { parsePlaybook } from "./teaching-session.js";
 import {
   createEarlierFileQueue,
-  currentTurnFilesInstruction,
   listCurrentTurnFiles,
   listRecentThreadFiles,
   materializeCurrentTurnFiles,
   materializeEarlierFiles,
   materializeRecentThreadFiles,
-  recentThreadFilesInstruction,
 } from "./thread-artifacts.js";
+import {
+  currentTurnFilesInstruction,
+  recentThreadFilesInstruction,
+} from "./thread-artifacts.prompt.js";
 import { loadAgentTicketContext } from "./ticket-context.js";
 import { appendToolCompletionAudit, toolCompletionOutcome } from "./tool-completion-audit.js";
 import { toolResultFingerprint } from "./tool-loop.js";
@@ -248,6 +253,7 @@ import {
   runReplaysToolHistory,
 } from "./tool-step-calls.js";
 import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
+import { wakeRun } from "./wake-run.js";
 import { createWebProvider } from "./web-provider-factory.js";
 
 /** Same reach as the MCP connector: usable servers assigned to the bot or shared with every bot. */
@@ -351,6 +357,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
 
       const claimed = await claimRun(deps, run, workerId);
       if (!claimed) return;
+      await deps.events.publishSpaceChange?.(run.spaceId, "runs");
       const { fence, current } = claimed;
       const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
         where: { id: run.botId },
@@ -1214,7 +1221,8 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           .filter(Boolean)
           .join("\n\n");
         const graphical =
-          computerKind !== "desktop" && deps.sandbox.describe().capabilities.graphical;
+          !sandboxKindCapabilities(computerKind).runsOnUserMachine &&
+          deps.sandbox.describe().capabilities.graphical;
         // Gate on the pair written to the run row above; re-deriving it would drop the
         // deployment fallback and gate a vision-capable default as text-only.
         const modelSeesImages = modelAcceptsImageInput(
@@ -1237,7 +1245,12 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         const paymentWallet = deps.paymentWallet;
         const paymentWalletEnabled = paymentWallet
           ? await paymentWalletConnected(
-              { prisma: deps.prisma, secretStore: deps.secretStore, paymentWallet },
+              {
+                prisma: deps.prisma,
+                secretStore: deps.secretStore,
+                jobs: deps.jobs,
+                paymentWallet,
+              },
               run.userId,
             )
           : false;
@@ -1487,23 +1500,22 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           disabledBuiltinTools,
           new Set(tools.map((tool) => tool.name)),
         );
-        const hostEnvironment =
-          computerKind && usesNativeShell(computerKind)
-            ? await deps.sandbox
-                .environment?.(
-                  {
-                    id: storedComputer.providerRef ?? storedComputer.id,
-                    botId: storedComputer.homeKey,
-                    kind: computerKind as ComputerRef["kind"],
-                    providerRef: storedComputer.providerRef ?? "",
-                  },
-                  {
-                    ...context,
-                    signal: AbortSignal.any([context.signal, AbortSignal.timeout(2000)]),
-                  },
-                )
-                .catch(() => undefined)
-            : undefined;
+        const hostEnvironment = sandboxKindCapabilities(computerKind).nativeShell
+          ? await deps.sandbox
+              .environment?.(
+                {
+                  id: storedComputer.providerRef ?? storedComputer.id,
+                  botId: storedComputer.homeKey,
+                  kind: computerKind as ComputerRef["kind"],
+                  providerRef: storedComputer.providerRef ?? "",
+                },
+                {
+                  ...context,
+                  signal: AbortSignal.any([context.signal, AbortSignal.timeout(2000)]),
+                },
+              )
+              .catch(() => undefined)
+          : undefined;
         const hostInstruction = hostEnvironment
           ? hostComputerInstruction(computerKind, hostEnvironment)
           : undefined;
@@ -2226,6 +2238,6 @@ async function cancelRunOfFormerMember(
   });
   if (!cancelled) return true;
   await deps.events.notify(run.threadId, cancelled.seq).catch(() => undefined);
-  if (cancelled.continuationId) await deps.jobs.enqueue(runContinueJob(cancelled.continuationId));
+  if (cancelled.continuationId) await wakeRun(deps.jobs, cancelled.continuationId);
   return true;
 }

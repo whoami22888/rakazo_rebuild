@@ -4,11 +4,13 @@ import * as SecureStore from "expo-secure-store";
 import * as Speech from "expo-speech";
 import { Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureApiRequestContext, currentApiBase, rpc } from "./api";
+import { promptAiConsent } from "./ai-consent";
+import { allowPromptedAiConsent, captureApiRequestContext, currentApiBase, rpc } from "./api";
 import { DEVICE_VOICE_KEY } from "./device-voice";
 import {
   activateVoiceAudio,
   createSpeechOwner,
+  ensureVoiceConsent,
   getVoicePlaybackState,
   pauseVoicePlayback,
   playSpeechClip,
@@ -66,6 +68,7 @@ vi.mock("./api-auth", () => ({}));
 vi.mock("./api-live", () => ({}));
 vi.mock("./api", () => ({
   aiConsentCoalesceKey: vi.fn(() => "test-consent-context"),
+  allowPromptedAiConsent: vi.fn(async () => undefined),
   authHeaders: vi.fn(),
   captureApiRequestContext: vi.fn(),
   currentApiBase: vi.fn(() => "https://api.example"),
@@ -121,6 +124,28 @@ describe("mobile speech", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("saves an allowed voice prompt the way that tells the permissions screen", async () => {
+    const recipient = { key: "speech", name: "Speech", use: "voice", detail: "", allowed: false };
+    vi.mocked(rpc).mockResolvedValue({
+      scope: "account-space",
+      version: "2026-09-14",
+      recipients: [recipient],
+    } as never);
+    vi.mocked(promptAiConsent).mockResolvedValue(true);
+    const requestContext = { apiBase: "https://support.example", headers: {} };
+
+    await ensureVoiceConsent(requestContext, "space");
+    expect(allowPromptedAiConsent).toHaveBeenCalledWith(
+      {
+        scope: "account-space",
+        version: "2026-09-14",
+        keys: ["speech"],
+        settingsScope: "space",
+      },
+      requestContext,
+    );
   });
 
   it("keeps every request on the server and space captured before preparation", async () => {
@@ -829,7 +854,7 @@ describe("hosted voice playback controls", () => {
       resumeVoicePlayback();
       expect(player.playing).toBe(true);
       const rejected = expect(spoken).rejects.toThrow("Could not play that clip.");
-      await vi.advanceTimersByTimeAsync(14_000);
+      await vi.advanceTimersByTimeAsync(2_000);
       expect(getVoicePlaybackState().status).toBe("playing");
       await vi.advanceTimersByTimeAsync(1_000);
       await rejected;
@@ -903,6 +928,78 @@ describe("call audio", () => {
     expect(createAudioPlayer).toHaveBeenLastCalledWith(expect.anything(), {
       keepAudioSessionActive: false,
     });
+  });
+
+  function reportingPlayer(onPlay: (report: (status: Record<string, unknown>) => void) => void) {
+    const listeners = new Set<(status: Record<string, unknown>) => void>();
+    const report = (status: Record<string, unknown>) => {
+      for (const listener of [...listeners]) listener(status);
+    };
+    const player = {
+      play: vi.fn(() => onPlay(report)),
+      pause: vi.fn(),
+      release: vi.fn(),
+      addListener: (_event: string, listener: (status: Record<string, unknown>) => void) => {
+        listeners.add(listener);
+        return { remove: () => listeners.delete(listener) };
+      },
+    };
+    vi.mocked(createAudioPlayer).mockReturnValue(
+      player as unknown as ReturnType<typeof createAudioPlayer>,
+    );
+    return { player, report };
+  }
+
+  it("gives up within seconds on a clip whose position never moves", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal("Audio", undefined);
+    try {
+      // Android reports playing while it is still buffering.
+      const { player } = reportingPlayer((report) =>
+        report({ playing: true, currentTime: 0, duration: 4 }),
+      );
+      const failed = expect(playSpeechClip(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+        "Could not play that clip.",
+      );
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(player.release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+      await failed;
+      expect(player.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails a clip at once when the player reports an error", async () => {
+    vi.stubGlobal("Audio", undefined);
+    const { player } = reportingPlayer((report) =>
+      report({ playing: false, error: "Could not open audio output." }),
+    );
+    await expect(playSpeechClip(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+      "Could not open audio output.",
+    );
+    expect(player.release).toHaveBeenCalledOnce();
+  });
+
+  it("plays a clip whose position moves past the start window to its end", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal("Audio", undefined);
+    try {
+      const { player, report } = reportingPlayer((report) =>
+        report({ playing: true, currentTime: 0, duration: 6 }),
+      );
+      const played = playSpeechClip(new Uint8Array([1, 2, 3]));
+      await vi.advanceTimersByTimeAsync(500);
+      report({ playing: true, currentTime: 0.5, duration: 6 });
+      await vi.advanceTimersByTimeAsync(5_500);
+      expect(player.release).not.toHaveBeenCalled();
+      report({ playing: false, currentTime: 6, duration: 6, didJustFinish: true });
+      await played;
+      expect(player.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

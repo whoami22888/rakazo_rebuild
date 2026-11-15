@@ -9,12 +9,16 @@ import type {
   Space,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { isRetryableError, reorderBotTo } from "@rakazo/core";
+import { reorderBotTo } from "@rakazo/core";
 import { replaceEqualDeep } from "@tanstack/react-query";
 import type { RefObject } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { takeInitialBootstrap } from "../../lib/bootstrap";
-import { linkedBotRoute } from "../../lib/bootstrap-target";
+import {
+  initialBootstrapTarget,
+  linkedBotRoute,
+  linkedGroupRoute,
+} from "../../lib/bootstrap-target";
 import { localTimezone } from "../../lib/local-timezone";
 import { markOnce } from "../../lib/performance";
 import type { ChatTarget } from "../../lib/query";
@@ -23,7 +27,7 @@ import type { createSpaceRpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 import type { RosterDropTarget } from "./roster-drop";
 import { resolveRosterDrop } from "./roster-drop";
-import { createRosterSchedule, ROSTER_POLL_MS } from "./roster-schedule";
+import { createRosterSignals } from "./roster-signals";
 import type { useShellNavigation } from "./use-shell-navigation";
 import { firstThreadRoute } from "./use-shell-navigation";
 import type { ThreadState } from "./use-thread-state";
@@ -60,7 +64,7 @@ export function useSpaceRoster({
   const [archivedBots, setArchivedBots] = useState<Bot[]>(seed?.archivedBots ?? []);
   const [archivedGroups, setArchivedGroups] = useState<Group[]>(seed?.archivedGroups ?? []);
   const [initialBotsLoaded, setInitialBotsLoaded] = useState(Boolean(seed));
-  // A failed first load falls back to the shell, whose polling and footer can still recover.
+  // A failed first load falls back to the shell, whose re-reads and footer can still recover.
   const [initialLoadFailed, setInitialLoadFailed] = useState(false);
   const [bootstrapMe, setBootstrapMe] = useState<Me | null | undefined>(seed?.me);
   const callsEnabledRef = useRef(false);
@@ -70,11 +74,12 @@ export function useSpaceRoster({
   const botsRefreshEpoch = useRef(0);
   const botsRefreshApplied = useRef(0);
   const archivedBotsRefreshEpoch = useRef(0);
-  const botsRefreshInFlight = useRef(0);
   const routeBotId = useRef<string | undefined>(botId);
   routeBotId.current = botId;
   const routeGroupId = useRef<string | undefined>(groupId);
   routeGroupId.current = groupId;
+  /** Whether the switch to another space that has begun is still on its way; null between switches. */
+  const switchingSpace = useRef<(() => boolean) | null>(null);
 
   const refreshBots = useCallback(
     async (includeArchived = false, replaceBotOrder = false) => {
@@ -83,69 +88,84 @@ export function useSpaceRoster({
       const botOrderEpoch = botOrderEpochRef.current;
       const preserveBotOrder = savingBotOrderRef.current || pendingBotOrderRef.current !== null;
       const archivedRequest = includeArchived ? ++archivedBotsRefreshEpoch.current : null;
-      botsRefreshInFlight.current += 1;
-      try {
-        const [navigation, archived, archivedGroupList] = await Promise.all([
-          rpc.spaces.list(),
-          includeArchived ? rpc.bots.listArchived() : Promise.resolve(null),
-          includeArchived ? rpc.groups.listArchived() : Promise.resolve(null),
-        ]);
-        const { bots: list, botSections: sections, groups: groupList } = navigation.current;
-        markOnce("rk:renderer:bots-response");
-        const botsFresh = request === botsRefreshEpoch.current;
-        const archivedFresh =
-          archivedRequest != null && archivedRequest === archivedBotsRefreshEpoch.current;
-        // A newer non-archived refresh can win the bots epoch while an older
-        // includeArchived request still owns archivedBotsRefreshEpoch — apply
-        // whichever slices are still current.
-        if (!botsFresh && !archivedFresh) return;
-        // The roster is polled; keeping unchanged values lets an unchanged poll skip rendering.
-        if (archivedFresh && archived)
-          setArchivedBots((previous) => replaceEqualDeep(previous, archived));
-        if (archivedFresh && archivedGroupList)
-          setArchivedGroups((previous) => replaceEqualDeep(previous, archivedGroupList));
-        if (!botsFresh) return;
-        if (
-          botOrderEpoch === botOrderEpochRef.current &&
-          (replaceBotOrder || (!preserveBotOrder && !savingBotOrderRef.current))
-        ) {
-          setBots((previous) => replaceEqualDeep(previous, list));
-        }
-        setBotSections((previous) => replaceEqualDeep(previous, sections));
-        setGroups((previous) => replaceEqualDeep(previous, groupList));
-        setSpaces((previous) => replaceEqualDeep(previous, navigation.spaces));
-        setInitialBotsLoaded(true);
-        botsRefreshApplied.current = request;
-        if (
-          includeArchived &&
-          list.length === 0 &&
-          archived?.length === 0 &&
-          groupList.length === 0 &&
-          archivedGroupList?.length === 0 &&
-          !navigation.spaces.some((space) => space.hasContent)
-        ) {
-          // Only the very first bot everywhere needs onboarding. An empty
-          // current space with content elsewhere stays in the app so the
-          // space can be switched to or deleted instead of trapping the user.
-          navigate("/onboarding", { replace: true });
-          return;
-        }
-        const currentGroupId = routeGroupId.current;
-        if (currentGroupId) {
-          if (!groupList.some((group) => group.id === currentGroupId)) {
-            redirectKeepingOverlay(firstThreadRoute(list, groupList));
-          }
-          return;
-        }
-        const currentBotId = routeBotId.current;
-        if (!currentBotId || !list.some((bot) => bot.id === currentBotId)) {
+      const [navigation, archived, archivedGroupList] = await Promise.all([
+        rpc.spaces.list(),
+        includeArchived ? rpc.bots.listArchived() : Promise.resolve(null),
+        includeArchived ? rpc.groups.listArchived() : Promise.resolve(null),
+      ]);
+      const { bots: list, botSections: sections, groups: groupList } = navigation.current;
+      markOnce("rk:renderer:bots-response");
+      const botsFresh = request === botsRefreshEpoch.current;
+      const archivedFresh =
+        archivedRequest != null && archivedRequest === archivedBotsRefreshEpoch.current;
+      // A newer non-archived refresh can win the bots epoch while an older
+      // includeArchived request still owns archivedBotsRefreshEpoch — apply
+      // whichever slices are still current.
+      if (!botsFresh && !archivedFresh) return;
+      // Keeping unchanged values lets a re-read that found nothing new skip rendering.
+      if (archivedFresh && archived)
+        setArchivedBots((previous) => replaceEqualDeep(previous, archived));
+      if (archivedFresh && archivedGroupList)
+        setArchivedGroups((previous) => replaceEqualDeep(previous, archivedGroupList));
+      if (!botsFresh) return;
+      if (
+        botOrderEpoch === botOrderEpochRef.current &&
+        (replaceBotOrder || (!preserveBotOrder && !savingBotOrderRef.current))
+      ) {
+        setBots((previous) => replaceEqualDeep(previous, list));
+      }
+      setBotSections((previous) => replaceEqualDeep(previous, sections));
+      setGroups((previous) => replaceEqualDeep(previous, groupList));
+      setSpaces((previous) => replaceEqualDeep(previous, navigation.spaces));
+      setInitialBotsLoaded(true);
+      botsRefreshApplied.current = request;
+      if (
+        includeArchived &&
+        list.length === 0 &&
+        archived?.length === 0 &&
+        groupList.length === 0 &&
+        archivedGroupList?.length === 0 &&
+        !navigation.spaces.some((space) => space.hasContent)
+      ) {
+        // Only the very first bot everywhere needs onboarding. An empty
+        // current space with content elsewhere stays in the app so the
+        // space can be switched to or deleted instead of trapping the user.
+        navigate("/onboarding", { replace: true });
+        return;
+      }
+      // The chat a switch is opening is in the other space's roster, and moving the route cancels it.
+      if (switchingSpace.current?.()) return;
+      const currentGroupId = routeGroupId.current;
+      if (currentGroupId) {
+        if (!groupList.some((group) => group.id === currentGroupId)) {
           redirectKeepingOverlay(firstThreadRoute(list, groupList));
         }
-      } finally {
-        botsRefreshInFlight.current -= 1;
+        return;
+      }
+      const currentBotId = routeBotId.current;
+      if (!currentBotId || !list.some((bot) => bot.id === currentBotId)) {
+        redirectKeepingOverlay(firstThreadRoute(list, groupList));
       }
     },
     [navigate],
+  );
+
+  /**
+   * Leaves the route alone while `live` says a switch to another space is on its way. The switch
+   * calls the returned function when it is over; one that stayed in this space has its route
+   * checked then, since nothing repaired it meanwhile.
+   */
+  const beginSpaceSwitch = useCallback(
+    (live: () => boolean) => {
+      switchingSpace.current = live;
+      return (leftSpace: boolean) => {
+        // A newer switch has taken over, and checks the route when it ends.
+        if (switchingSpace.current !== live) return;
+        switchingSpace.current = null;
+        if (!leftSpace) void refreshBots().catch(() => undefined);
+      };
+    },
+    [refreshBots],
   );
 
   const flushBotOrder = useCallback(async () => {
@@ -220,9 +240,8 @@ export function useSpaceRoster({
     setBootstrapMe,
     callsEnabledRef,
     botsRefreshApplied,
-    botsRefreshInFlight,
-    routeBotId,
-    routeGroupId,
+    switchingSpace,
+    beginSpaceSwitch,
     refreshBots,
     reorderRosterBot,
     addCreatedBot,
@@ -264,7 +283,7 @@ export function useSpaceBootstrap({
   chat: ChatTarget | undefined;
   navigate: Navigation["navigate"];
   redirectKeepingOverlay: Navigation["redirectKeepingOverlay"];
-  /** Opens a linked bot that lives in another of the user's Spaces. */
+  /** Opens a linked chat that lives in another of the user's Spaces. */
   openSpaceChat: RefObject<(spaceId: string, path: string) => void>;
 }) {
   const {
@@ -286,16 +305,14 @@ export function useSpaceBootstrap({
     setBootstrapMe,
     callsEnabledRef,
     botsRefreshApplied,
-    botsRefreshInFlight,
-    routeBotId,
-    routeGroupId,
+    switchingSpace,
     refreshBots,
   } = roster;
   const { snapshotRef, commitSnapshot, setRoutines, setRoutinesBotId, bootstrappedThread } = thread;
   // Until the route names the chat reopened from cache, that chat stands in for it.
   const routeChat = botId || groupId ? undefined : startChat;
   const refreshRosterRef = useRef<() => void>(() => {});
-  const [rosterSchedule] = useState(() => createRosterSchedule(() => refreshRosterRef.current()));
+  const [rosterSignals] = useState(() => createRosterSignals(() => refreshRosterRef.current()));
 
   function saveSeed(bootstrap: AppBootstrap, chat?: ChatTarget) {
     // With no space chosen the server picks one, so a shell reopened that way looks there too.
@@ -341,7 +358,7 @@ export function useSpaceBootstrap({
   useEffect(() => {
     let cancelled = false;
     const appliedAtStart = botsRefreshApplied.current;
-    void takeInitialBootstrap(botId ?? startChat?.botId)
+    void takeInitialBootstrap(botId ?? startChat?.botId, groupId)
       .then((bootstrap) => {
         // Kept for the space it belongs to, so switching back to it can paint at once.
         saveSeed(bootstrap);
@@ -386,21 +403,28 @@ export function useSpaceBootstrap({
           markOnce("rk:renderer:bots-response");
           markOnce("rk:renderer:thread-response");
         }
+        // The user may have opened another chat while this loaded, so the route is read now.
+        const route = initialBootstrapTarget(window.location.pathname, false);
+        // A switch begun meanwhile is taking the user elsewhere, and moving the route cancels it.
+        if (!route || switchingSpace.current?.()) return;
         // Checked before the roster gate: a refresh that landed first may already have moved away.
-        const linked = groupId
-          ? undefined
-          : linkedBotRoute(bootstrap, botId, window.location.search);
+        // The server placed the chat this load asked about, so the route must still name it.
+        const linked =
+          route.botId !== botId || route.groupId !== groupId
+            ? undefined
+            : groupId
+              ? linkedGroupRoute(bootstrap, groupId, window.location.search)
+              : linkedBotRoute(bootstrap, botId, window.location.search);
         if (linked) {
           openSpaceChat.current(linked.spaceId, linked.path);
           return;
         }
         if (!applyBotLists) return;
-        // A shell that reopened from cache is already on a chat; it moves only if that chat is gone.
+        // The shell moves only if the chat its route names is gone.
         if (
-          seed &&
-          (routeGroupId.current
-            ? groupList.some((group) => group.id === routeGroupId.current)
-            : bootstrap.bots.some((bot) => bot.id === routeBotId.current))
+          route.groupId
+            ? groupList.some((group) => group.id === route.groupId)
+            : bootstrap.bots.some((bot) => bot.id === route.botId)
         ) {
           return;
         }
@@ -414,55 +438,39 @@ export function useSpaceBootstrap({
           navigate("/onboarding", { replace: true });
           return;
         }
-        if (groupId) {
-          if (!groupList.some((group) => group.id === groupId)) {
-            redirectKeepingOverlay(firstThreadRoute(bootstrap.bots, groupList));
-          }
+        if (route.groupId) {
+          redirectKeepingOverlay(firstThreadRoute(bootstrap.bots, groupList));
           return;
         }
         const selectedBotId = bootstrap.thread?.botId ?? bootstrap.bots[0]?.id;
-        if (selectedBotId && selectedBotId !== botId) {
-          redirectKeepingOverlay(`/app/${selectedBotId}`);
-        }
+        if (selectedBotId) redirectKeepingOverlay(`/app/${selectedBotId}`);
       })
       .catch(() => {
         if (cancelled) return;
         if (!seed) setBootstrapMe(null);
-        void refreshBots(true).catch(() => {
+        return refreshBots(true).catch(() => {
           if (!cancelled) setInitialLoadFailed(true);
         });
-      });
+      })
+      .finally(() => rosterSignals.firstLoadSettled());
     let refreshTimer: number | undefined;
     const refreshVisibleBots = () => {
       if (document.visibilityState !== "visible" && !callsEnabledRef.current) return;
       window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(
-        () =>
-          void refreshBots().catch((error) => {
-            if (!isRetryableError(error)) window.clearInterval(poll);
-          }),
-        50,
-      );
+      refreshTimer = window.setTimeout(() => void refreshBots().catch(() => undefined), 50);
     };
     refreshRosterRef.current = refreshVisibleBots;
     window.addEventListener("focus", refreshVisibleBots);
     document.addEventListener("visibilitychange", refreshVisibleBots);
-    // While the server signals roster changes this only heals a missed one. It skips while a
-    // refresh is in flight; other callers still bump botsRefreshEpoch so only the latest applies.
-    const poll = window.setInterval(() => {
-      if (botsRefreshInFlight.current > 0) return;
-      rosterSchedule.poll();
-    }, ROSTER_POLL_MS);
     return () => {
       cancelled = true;
       refreshRosterRef.current = () => {};
       window.clearTimeout(refreshTimer);
-      window.clearInterval(poll);
       window.removeEventListener("focus", refreshVisibleBots);
       document.removeEventListener("visibilitychange", refreshVisibleBots);
     };
   }, []);
-  return rosterSchedule.signals;
+  return rosterSignals;
 }
 
 /** Dragging a bot in the roster: reorder it, move it to a section, or add it to a group. */

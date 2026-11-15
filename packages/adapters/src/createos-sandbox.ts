@@ -14,6 +14,8 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  UnreferencedMachine,
+  UnreferencedMachineRecords,
 } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs, cancelResponseBody } from "@rakazo/core";
 import {
@@ -33,6 +35,7 @@ import {
   workspacePath,
 } from "./computer-support.js";
 import { PORTABLE_TRANSFER_BATCH_BYTES } from "./computer-workspace.js";
+import { deleteUnreferencedMachine, recordUnreferencedMachine } from "./sandbox-cleanup.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { abortedCommandEvents, timedOutCommandEvents } from "./sandbox-command-events.js";
 import { sandboxNotFoundError } from "./sandbox-errors.js";
@@ -340,6 +343,7 @@ export interface CreateOSSandboxProviderOptions {
   shape?: string;
   rootfs?: string;
   fetch?: typeof fetch;
+  unreferencedMachines?: UnreferencedMachineRecords;
 }
 
 interface CreateOSView {
@@ -447,11 +451,16 @@ export class CreateOSSandboxProvider implements SandboxProvider {
       context,
     );
     if (!created?.id) throw new Error("CreateOS did not return a sandbox id");
+    await recordUnreferencedMachine(this.options.unreferencedMachines, {
+      provider: "createos",
+      machineId: created.id,
+      homeKey: request.botId,
+    });
     try {
       const settled = await this.waitUntilSettled(created.id, context);
       if (settled.status !== "running") throw new Error(`CreateOS sandbox is ${settled.status}`);
     } catch (error) {
-      await this.abandonSandbox(created.id);
+      await this.abandonSandbox(created.id, request.botId);
       throw error;
     }
     return this.ref(created.id, request.botId, true);
@@ -1047,18 +1056,32 @@ print(json.dumps(out))
     return (result.result?.stdout ?? "").trim();
   }
 
-  /** Best-effort delete so a sandbox that will not run stops counting against the quota. */
-  private async abandonSandbox(id: string): Promise<void> {
+  /** Deletes a sandbox that will not run, so it stops counting against the quota. */
+  private abandonSandbox(id: string, homeKey?: string): Promise<void> {
+    return deleteUnreferencedMachine(
+      this.options.unreferencedMachines,
+      { provider: "createos", machineId: id, ...(homeKey && { homeKey }) },
+      (signal) => this.deleteSandbox(id, signal),
+    );
+  }
+
+  async deleteMachine(machine: UnreferencedMachine, signal: AbortSignal): Promise<void> {
+    await this.deleteSandbox(machine.machineId, signal);
+  }
+
+  private async deleteSandbox(id: string, signal: AbortSignal): Promise<void> {
     const context: AdapterContext = {
       operationId: "createos.abandon",
       traceId: "createos.abandon",
       spaceId: "createos",
       userId: "createos",
-      signal: AbortSignal.timeout(10_000),
+      signal,
     };
-    await this.request("DELETE", `/v1/sandboxes/${encodeURIComponent(id)}`, context).catch(
-      () => undefined,
-    );
+    try {
+      await this.request("DELETE", `/v1/sandboxes/${encodeURIComponent(id)}`, context);
+    } catch (error) {
+      if (!isCreateOSSandboxGone(error)) throw error;
+    }
   }
 
   private async applyAction(

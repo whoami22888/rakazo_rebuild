@@ -101,13 +101,18 @@ export async function signupThroughForm(
   testInfo?: TestInfo,
 ) {
   await page.goto("/sign-up");
-  await expect(page.getByRole("heading", { name: "Create your Rakazo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
   await openEmailSignIn(page);
   if (testInfo) await captureScreenshot(page, testInfo, "01-sign-up");
   await page.getByPlaceholder("Your name").fill(name);
   await page.getByPlaceholder("Your email address").fill(email);
   await page.getByPlaceholder("Password").fill(password);
   await page.getByRole("button", { name: "Create account" }).click();
+}
+
+/** Brings the window back into view, which reads live lists again as returning to the tab does. */
+export async function refocus(page: Page) {
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
 }
 
 /** Opens Integrations' add menu and picks one of its custom sources. */
