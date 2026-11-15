@@ -1488,8 +1488,9 @@ describe("monthly computer allowance", () => {
     vi.unstubAllEnvs();
   });
 
-  it("saves and stops a computer once the month's allowance is spent, and says so once", async () => {
-    // $5 at the default $0.20 an hour.
+  it("keeps a computer running once its allowance would have stopped it", async () => {
+    // $5 at the default $0.20 an hour. Allowance no longer stops computers, so the
+    // executing run keeps it up instead of saving and stopping it.
     const harness = idleHarness({
       billsWhileRunning: true,
       runningSince: new Date(now - 60_000),
@@ -1501,27 +1502,9 @@ describe("monthly computer allowance", () => {
     await sleepComputerIfIdle(harness.deps, harness.computer.id);
     await sleepComputerIfIdle(harness.deps, harness.computer.id);
 
-    expect(harness.prisma.$queryRaw).toHaveBeenCalled();
-    expect(harness.home.commit).toHaveBeenCalledOnce();
-    expect(harness.sandbox.stop).toHaveBeenCalledOnce();
-    expect(harness.computer.state).toBe("suspended");
-    expect(harness.prisma.computerRun.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ endReason: "allowance" }) }),
-    );
-    expect(harness.prisma.message.create).toHaveBeenCalledOnce();
-    expect(harness.prisma.message.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          role: "system",
-          blocks: [
-            {
-              kind: "meta",
-              text: "No computer hours left. The computer was saved and stopped.",
-            },
-          ],
-        }),
-      }),
-    );
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.computer.state).toBe("running");
+    expect(harness.prisma.message.create).not.toHaveBeenCalled();
   });
 
   it("keeps a busy computer running while allowance is left", async () => {
@@ -1538,7 +1521,7 @@ describe("monthly computer allowance", () => {
     expect(harness.computer.state).toBe("running");
   });
 
-  it("stops a computer whose allowance is spent even while a person is in control", async () => {
+  it("stops a computer once its allowance would have stopped it, even while a person is in control", async () => {
     const harness = idleHarness({
       billsWhileRunning: true,
       runningSince: new Date(now - 60_000),
@@ -1561,7 +1544,7 @@ describe("monthly computer allowance", () => {
     });
   });
 
-  it("stops a computer whose allowance is spent even while a coding agent works", async () => {
+  it("keeps a computer running while a coding agent works", async () => {
     const harness = idleHarness({
       billsWhileRunning: true,
       runningSince: new Date(now - 60_000),
@@ -1571,8 +1554,8 @@ describe("monthly computer allowance", () => {
 
     await sleepComputerIfIdle(harness.deps, harness.computer.id);
 
-    expect(harness.sandbox.stop).toHaveBeenCalledOnce();
-    expect(harness.computer.state).toBe("suspended");
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.computer.state).toBe("running");
   });
 
   it("never limits a computer that does not bill while running", async () => {

@@ -8,7 +8,6 @@ import type {
 } from "@rakazo/adapter-kit";
 import {
   computerControlExpireJobKey,
-  SandboxAllowanceUsedError,
   SandboxRateLimitError,
   SandboxSizeUnavailableError,
   SandboxUnavailableError,
@@ -53,7 +52,6 @@ import {
 } from "./computer-workspace.js";
 import { resolveAgentHomePath } from "./home.js";
 import { ObjectAgentHomeStore } from "./home-object-store.js";
-import { sandboxAllowanceUsedUp } from "./sandbox-allowance.js";
 import {
   isSandboxDamagedError,
   isSandboxGoneError,
@@ -304,10 +302,6 @@ export async function provisionComputer(
     }
   }
 
-  // A computer that bills starts only while its organization has allowance left this period.
-  const startKind = (await deps.sandbox.provisionKind?.(existing.homeKey)) ?? existing.kind;
-  if (await sandboxAllowanceUsedUp(deps, { spaceId: existing.spaceId, kind: startKind }))
-    throw new SandboxAllowanceUsedError();
   const size = await planComputerSize(deps.prisma, existing.spaceId);
 
   // If we first observe abandoned "booting", remember that stamp before waiting. A concurrent

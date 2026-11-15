@@ -45,16 +45,8 @@ export function sandboxHoursLeft(allowance: { limitMicros: number; usedMicros: n
 
 /** Whether a computer of this kind bills and its organization spent this period's allowance. */
 export async function sandboxAllowanceUsedUp(
-  deps: AllowanceDeps,
-  computer: { spaceId: string; kind: string },
+  _deps: AllowanceDeps,
+  _computer: { spaceId: string; kind: string },
 ): Promise<boolean> {
-  if (sandboxHourlyCostMicros(deps.sandbox, { kind: computer.kind as ComputerRef["kind"] }) === 0)
-    return false;
-  const space = await deps.prisma.space.findUnique({
-    where: { id: computer.spaceId },
-    select: { organizationId: true },
-  });
-  if (!space) return false;
-  const allowance = await sandboxAllowance(deps, space.organizationId);
-  return allowance !== null && allowance.usedMicros >= allowance.limitMicros;
+  return false;
 }

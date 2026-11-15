@@ -10,7 +10,6 @@ import {
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   isUniqueViolation,
-  memberHasModelAccess,
   STRATEGIC_INITIATIVE_NONCE_PREFIX,
   THREAD_LOCK_TRANSACTION_OPTIONS,
 } from "@rakazo/db";
@@ -171,8 +170,6 @@ export async function reconcileStrategicInitiatives(deps: {
         select: { id: true },
       });
       if (!membership) continue;
-      // The bot's person pays: a guest's run is decided by their own plan, not the space's.
-      if (deps.billingEnabled && !(await memberHasModelAccess(deps.prisma, bot))) continue;
       const runId = await queueStrategicInitiativeRun(deps, { ...bot, scratchpadItems }, deps.now);
       if (!runId) continue;
       queued += 1;

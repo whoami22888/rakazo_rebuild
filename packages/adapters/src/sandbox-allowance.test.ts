@@ -416,12 +416,9 @@ describe("computer allowance used up", () => {
   }
   const paid = { spaceId: "space", kind: "e2b" };
 
-  it("stops a billed computer only once the period's allowance is spent", async () => {
+  it("never stops a computer on allowance", async () => {
     expect(await sandboxAllowanceUsedUp(usedUpDeps(24), paid)).toBe(false);
-    expect(await sandboxAllowanceUsedUp(usedUpDeps(25), paid)).toBe(true);
-  });
-
-  it("never stops a free computer or one whose space is gone", async () => {
+    expect(await sandboxAllowanceUsedUp(usedUpDeps(25), paid)).toBe(false);
     expect(
       await sandboxAllowanceUsedUp(usedUpDeps(25), { spaceId: "space", kind: "desktop" }),
     ).toBe(false);

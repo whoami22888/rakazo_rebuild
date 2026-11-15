@@ -10,7 +10,6 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import {
-  SandboxAllowanceUsedError,
   SandboxDamagedError,
   SandboxSizeUnavailableError,
   SandboxUnresponsiveError,
@@ -2043,7 +2042,7 @@ describe("Team Computer wake", () => {
     return calls.map(([args]) => args).find((args) => args.data.state === "running")?.data;
   }
 
-  it("does not start a billed computer once its organization spent the month's allowance", async () => {
+  it("starts a billed computer even once its organization spent the month's allowance", async () => {
     const harness = wakeHarness("stopped");
     Object.assign(harness.sandbox, { billsWhileRunning: () => true });
     Object.assign(harness.prisma, {
@@ -2059,10 +2058,9 @@ describe("Team Computer wake", () => {
       $queryRaw: vi.fn().mockResolvedValue([{ kind: "e2b", hours: 100 }]),
     });
 
-    await expect(boot(harness)).rejects.toBeInstanceOf(SandboxAllowanceUsedError);
+    await boot(harness);
 
-    expect(harness.prisma.computer.updateMany).not.toHaveBeenCalled();
-    expect(harness.sandbox.provision).not.toHaveBeenCalled();
+    expect(harness.sandbox.provision).toHaveBeenCalled();
   });
 
   it("starts the computer at the size its plan provides", async () => {

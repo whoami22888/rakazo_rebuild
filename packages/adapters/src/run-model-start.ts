@@ -1,8 +1,7 @@
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { isModelCredentialRejected } from "@rakazo/adapter-kit";
 import type { ModelRoleChoice } from "@rakazo/contracts";
-import { MISSING_MODEL_RUN_ERROR, MODEL_ACCESS_REQUIRED_RUN_ERROR } from "@rakazo/core";
-import { memberHasModelAccess } from "@rakazo/db";
+import { MISSING_MODEL_RUN_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import type { ExecutorDeps } from "./executor-deps.js";
 import { HostedModelCreditsRequiredError } from "./model-credit-observer.js";
@@ -12,7 +11,6 @@ import { isRetiredModelCredentialError } from "./pi-oauth.js";
 import type { restoreComputerModels } from "./pi-runtime-computer-mode.js";
 import {
   isTerminalModelSetupError,
-  modelCreditBillingEnabled,
   resolveConnectedModelKey,
   resolveModelKey,
 } from "./run-model.js";
@@ -93,15 +91,10 @@ export async function startRunModel(
   backups: ReturnType<typeof runModelBackups>,
   registerSecrets: (values: string[]) => void,
 ) {
-  const modelAccessDenied = async () =>
-    (await modelCreditBillingEnabled(deps)) && !(await memberHasModelAccess(deps.prisma, run));
   let start: Awaited<ReturnType<typeof backups.startOnBackup>>;
   let primaryFailure = { message: MISSING_MODEL_RUN_ERROR, accountFailure: true };
   let retryPrimary: unknown;
   if (selected.provider && selected.id) {
-    if (await modelAccessDenied()) {
-      return { failure: { message: MODEL_ACCESS_REQUIRED_RUN_ERROR, accountFailure: true } };
-    }
     try {
       start = {
         provider: selected.provider,
@@ -141,8 +134,6 @@ export async function startRunModel(
       };
       if (!terminal) retryPrimary = error;
     }
-  } else if (await modelAccessDenied()) {
-    return { failure: { message: MISSING_MODEL_RUN_ERROR, accountFailure: true } };
   }
   start ??= await backups.startOnBackup();
   if (!start) {

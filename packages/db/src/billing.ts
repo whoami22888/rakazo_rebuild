@@ -1,31 +1,24 @@
 import { randomUUID } from "node:crypto";
 import type { BillingSubscriptionSnapshot } from "@rakazo/adapter-kit";
-import { BYOK_TIERS } from "@rakazo/contracts";
 import type { BillingAccount, PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
 import { IsolationError } from "./scope.js";
 
-const ACCESS_STATUSES = new Set(["trialing", "active", "past_due"]);
-
-export function hasBillingAccess(status: string | null): boolean {
-  return status !== null && ACCESS_STATUSES.has(status);
+export function hasBillingAccess(_status: string | null): boolean {
+  // Access is not gated by a subscription.
+  return true;
 }
 
 /**
- * Whether a model-credit organization can run bots. Any live subscription grants it, as does a
- * credit balance outside own-key mode. Otherwise only a free own-key plan or free period does.
+ * Whether a model-credit organization can run bots. Access is not gated by a plan or balance.
  */
 export function hasModelAccess(
-  credits: { mode: string | null; balanceMicros: bigint; byokFreeUntil: Date | null },
-  subscriptionStatus: string | null,
-  now = new Date(),
+  _credits: { mode: string | null; balanceMicros: bigint; byokFreeUntil: Date | null },
+  _subscriptionStatus: string | null,
+  _now = new Date(),
 ): boolean {
-  if (hasBillingAccess(subscriptionStatus)) return true;
-  if (credits.mode === "byok")
-    return BYOK_TIERS.standard.monthlyPriceCents === null || byokFreeUntil(credits, now) !== null;
-  if (credits.balanceMicros > 0n) return true;
-  return BYOK_TIERS.standard.monthlyPriceCents === null && credits.mode === "credits";
+  return true;
 }
 
 /** The free period's end while it is still running. */
@@ -172,48 +165,16 @@ export async function releaseByokTrialCheckouts(
   });
 }
 
-const MODEL_ACCESS_SELECT = {
-  modelCredits: { select: { mode: true, balanceMicros: true, byokFreeUntil: true } },
-  billing: { select: { status: true } },
-} as const;
-
-function organizationModelAccess(organization: {
-  modelCredits: { mode: string | null; balanceMicros: bigint; byokFreeUntil: Date | null } | null;
-  billing: { status: string | null } | null;
-}) {
-  return hasModelAccess(
-    organization.modelCredits ?? { mode: null, balanceMicros: 0n, byokFreeUntil: null },
-    organization.billing?.status ?? null,
-  );
+export async function spaceHasModelAccess(_prisma: PrismaClient, _spaceId: string) {
+  return true;
 }
 
-export async function spaceHasModelAccess(prisma: PrismaClient, spaceId: string) {
-  const space = await prisma.space.findUnique({
-    where: { id: spaceId },
-    select: { organization: { select: MODEL_ACCESS_SELECT } },
-  });
-  return space ? organizationModelAccess(space.organization) : false;
-}
-
-/** Access for one person's run: their own organization's plan when they are a guest. */
+/** Access for one person's run. */
 export async function memberHasModelAccess(
-  prisma: PrismaClient,
-  scope: { spaceId: string; userId: string },
+  _prisma: PrismaClient,
+  _scope: { spaceId: string; userId: string },
 ) {
-  // A member's org is the Space's, read with the membership in one query.
-  const membership = await prisma.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId: scope.spaceId, userId: scope.userId } },
-    select: { member: { select: { role: true, organization: { select: MODEL_ACCESS_SELECT } } } },
-  });
-  if (!membership) return false;
-  if (membership.member.role !== GUEST_ROLE) {
-    return organizationModelAccess(membership.member.organization);
-  }
-  const organization = await prisma.organization.findUnique({
-    where: { id: await ownedOrganizationId(prisma, scope.userId) },
-    select: MODEL_ACCESS_SELECT,
-  });
-  return organization ? organizationModelAccess(organization) : false;
+  return true;
 }
 
 export function billingAccountForOrganization(

@@ -39,7 +39,6 @@ import { screenLeaseIdForRun, toComputerRef } from "./computer-lifecycle.js";
 import { BrowserStillRunningError } from "./computer-screens.js";
 import { checkpointComputerWorkspace } from "./computer-workspace.js";
 import { HomeSaveConflictError } from "./home-object-store.js";
-import { sandboxAllowanceUsedUp } from "./sandbox-allowance.js";
 import { isSandboxDamagedError, isSandboxGoneError } from "./sandbox-errors.js";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;
@@ -477,7 +476,7 @@ export async function sleepComputerIfIdle(
   // the computer up. A person's control holds an idle computer up, but never past those limits;
   // stopping the computer then ends the control and any recording under it.
   const activeControl = hasActiveComputerControl(computer);
-  const allowanceUsed = await sandboxAllowanceUsedUp(deps, computer);
+  const allowanceUsed = false;
   const limitReached =
     allowanceUsed || activeLimitReached(deps.sandbox, ref, computer.runningSince);
   const activeStatuses = limitReached

@@ -6,7 +6,6 @@ import { useCallback, useRef, useState } from "react";
 import { currentApiBase, rpc, selectedSpaceId } from "./api";
 import { selectInitialSpace } from "./api-server";
 import { appBadgeGeneration } from "./app-badge";
-import { isPaywallShown } from "./billing";
 import { getActiveUiLocale } from "./i18n";
 import { retainInboxValue } from "./inbox-retention";
 import type {
@@ -89,8 +88,6 @@ export function useHomeInbox(
             // Only while this session is still the live one: a reply after sign-out must not
             // restore the previous owner's link.
             if (current) rememberReferral(spaceId, billing.referral);
-            if (current && billing.funding !== undefined && !billing.access && !isPaywallShown())
-              router.push("/paywall");
           })
           .catch(() => undefined);
       }

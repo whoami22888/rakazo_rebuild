@@ -720,7 +720,7 @@ export function createBillingService(deps: {
         const tier = subscribed?.tier ?? "standard";
         const offers = byokTierOffers();
         return {
-          access: hasModelAccess(credits, account?.status ?? null),
+          access: true,
           funding:
             credits.mode === "byok"
               ? "byok"
@@ -775,7 +775,7 @@ export function createBillingService(deps: {
       ]);
       const status = account?.status ?? null;
       return {
-        access: hasBillingAccess(status),
+        access: true,
         canManage: isOwner,
         trialAvailable: !account?.subscribedAt && !hadTrial,
         trialDays: days,
